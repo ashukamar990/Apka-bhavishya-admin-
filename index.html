@@ -332,12 +332,19 @@ tr:last-child td{border-bottom:none;}tr:hover td{background:var(--card-h);}
       <div class="sgrid" style="grid-template-columns:repeat(3,1fr);">
         <div class="sc cgr"><div class="si">✅</div><div class="sv cgr" id="p-ok">—</div><div class="sl">Successful</div></div>
         <div class="sc cr"><div class="si">❌</div><div class="sv cr" id="p-fail">—</div><div class="sl">Failed/Cancelled</div></div>
-        <div class="sc cg"><div class="si">💵</div><div class="sv cg" id="p-tot">—</div><div class="sl">Total Collected (₹)</div></div>
+        <div class="sc cg"><div class="si">💵</div><div class="sv cg" id="p-tot">—</div><div class="sl">Total Collected (₹ + $)</div></div>
       </div>
       <div class="card"><div class="ctitle">Payment History</div>
         <div class="twrap"><table>
-          <thead><tr><th>Time</th><th>User</th><th>Type</th><th>Amount</th><th>Status</th><th>Payment ID</th></tr></thead>
-          <tbody id="ptb"><tr><td colspan="6" style="text-align:center;color:var(--muted);padding:26px;">Loading...</td></tr></tbody>
+          <thead><tr><th>Time</th><th>User</th><th>Type</th><th>Amount</th><th>Currency</th><th>Country</th><th>Status</th><th>Payment ID</th></tr></thead>
+          <tbody id="ptb"><tr><td colspan="8" style="text-align:center;color:var(--muted);padding:26px;">Loading...</td></tr></tbody>
+        </table></div>
+      </div>
+      <div class="card"><div class="ctitle">⚠️ Failed Activations <span class="csub">Payment receive hua par activation fail hua — yahan dikhega</span></div>
+        <div class="tbr" style="margin-bottom:10px;"><button class="ibtn" onclick="loadFailedPayments()"><i class="fas fa-sync-alt"></i> Refresh</button><button class="ibtn" onclick="exportCSV('failedPayments')"><i class="fas fa-download"></i> Export</button></div>
+        <div class="twrap"><table>
+          <thead><tr><th>Time</th><th>User</th><th>Type</th><th>Amount</th><th>Payment ID</th><th>Error</th></tr></thead>
+          <tbody id="fptb"><tr><td colspan="6" style="text-align:center;color:var(--muted);padding:26px;">Loading...</td></tr></tbody>
         </table></div>
       </div>
     </div>
@@ -421,6 +428,12 @@ tr:last-child td{border-bottom:none;}tr:hover td{background:var(--card-h);}
           <div class="fg"><label>Monthly Plan ($)</label><input type="number" step="0.01" id="usd-m" placeholder="1.20"></div>
           <div class="fg"><label>6 Month Plan ($)</label><input type="number" step="0.01" id="usd-6" placeholder="6.00"></div>
           <div class="fg"><label>Yearly Plan ($)</label><input type="number" step="0.01" id="usd-y" placeholder="12.00"></div>
+        </div>
+        <div style="background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.25);border-radius:10px;padding:12px 16px;margin:14px 0;font-size:.82rem;color:#ffa500;">
+          ⚠️ Razorpay yahan sirf ₹ (INR) mein settle karta hai — isliye $ customer se charge karte waqt ye rate use hoga taaki ulta-conversion na ho. Customer ko payment screen par $ amount + iska ₹ equivalent dono saaf dikhaya jaata hai.
+        </div>
+        <div class="fgrid">
+          <div class="fg"><label>USD → INR Razorpay Conversion Rate</label><input type="number" step="0.01" id="usd-rate" placeholder="84"></div>
         </div>
         <div class="srow"><button class="btn btnbl" onclick="saveUsdPricing()"><i class="fas fa-dollar-sign"></i> Save USD Pricing</button></div>
       </div>
@@ -770,27 +783,46 @@ function loadPayments(){
     db.ref('payments').once('value').then(snap=>{
         const d=snap.val()||{};
         const list=Object.values(d).sort((a,b)=>(b.successAt||b.timestamp||0)-(a.successAt||a.timestamp||0));
-        let ok=0,fail=0,tot=0;
+        let ok=0,fail=0,totInr=0,totUsd=0;
         list.forEach(p=>{
-            if(p.status==='success'){ok++;tot+=parseFloat(p.amount)||0;}
+            if(p.status==='success'){ok++; if((p.currency||'INR')==='USD'){totUsd+=parseFloat(p.amount)||0;}else{totInr+=parseFloat(p.amount)||0;} }
             else if(p.status==='cancelled'||p.status==='failed')fail++;
         });
         document.getElementById('p-ok').textContent=fmt(ok);
         document.getElementById('p-fail').textContent=fmt(fail);
-        document.getElementById('p-tot').textContent='₹'+fmt(Math.round(tot));
+        document.getElementById('p-tot').textContent='₹'+fmt(Math.round(totInr))+(totUsd?' + $'+totUsd.toFixed(2):'');
         expD.payments=list;
         const tb=document.getElementById('ptb');
-        if(!list.length){tb.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:26px;">Koi payment nahi abhi tak</td></tr>';return;}
-        const typeLabel={rashi:'🔮 Rashi ₹5',basic:'📜 Basic Kundli',premium:'✨ Premium Kundli',premium_package:'👑 Premium Pack'};
+        if(!list.length){tb.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:26px;">Koi payment nahi abhi tak</td></tr>';return;}
+        const typeLabel={rashi:'🔮 Rashi',basic:'📜 Basic Kundli',premium:'✨ Premium Kundli',premium_package:'👑 Premium Pack'};
         tb.innerHTML=list.slice(0,200).map(p=>{
             const ts=p.successAt||p.timestamp;
             const sb=p.status==='success'?'<span class="badge bgr">✅ Success</span>':p.status==='pending'?'<span class="badge bgd">⏳ Pending</span>':'<span class="badge brd">❌ '+(p.status||'?')+'</span>';
             const typeTxt=typeLabel[p.type||p.plan]||(p.type||p.plan||'—');
             const nameDisp=p.userName&&p.userName!=='User'?p.userName:(p.userId?'...'+p.userId.slice(-8):'—');
-            return `<tr><td style="font-size:.75rem;color:var(--muted);">${ts?new Date(ts).toLocaleString('hi-IN'):'—'}</td><td style="font-size:.8rem;">${nameDisp}</td><td>${typeTxt}</td><td style="color:var(--green);font-family:var(--mono);">₹${p.amount||0}</td><td>${sb}</td><td style="font-family:var(--mono);font-size:.7rem;color:var(--muted);">${p.paymentId||'—'}</td></tr>`;
+            const cur=p.currency||'INR';
+            const sym=cur==='USD'?'$':'₹';
+            return `<tr><td style="font-size:.75rem;color:var(--muted);">${ts?new Date(ts).toLocaleString('hi-IN'):'—'}</td><td style="font-size:.8rem;">${nameDisp}</td><td>${typeTxt}</td><td style="color:var(--green);font-family:var(--mono);">${sym}${p.amount||0}${p.chargeAmountINR&&cur==='USD'?' <span style="color:var(--muted);font-size:.7rem;">(₹'+p.chargeAmountINR+' charged)</span>':''}</td><td>${cur}</td><td style="font-size:.78rem;">${p.country||'—'}</td><td>${sb}</td><td style="font-family:var(--mono);font-size:.7rem;color:var(--muted);">${p.paymentId||'—'}</td></tr>`;
+        }).join('');
+    });
+    loadFailedPayments();
+}
+
+function loadFailedPayments(){
+    db.ref('failedPayments').once('value').then(snap=>{
+        const d=snap.val()||{};
+        const list=Object.values(d).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+        expD.failedPayments=list;
+        const tb=document.getElementById('fptb');
+        if(!list.length){tb.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:26px;">✅ Koi failed activation nahi — sab theek hai</td></tr>';return;}
+        tb.innerHTML=list.slice(0,200).map(p=>{
+            const sym=(p.currency||'INR')==='USD'?'$':'₹';
+            const nameDisp=p.userId?'...'+String(p.userId).slice(-8):'—';
+            return `<tr><td style="font-size:.75rem;color:var(--muted);">${p.timestamp?new Date(p.timestamp).toLocaleString('hi-IN'):'—'}</td><td style="font-size:.8rem;">${nameDisp}</td><td>${p.type||'—'}</td><td style="font-family:var(--mono);">${sym}${p.amount||0}</td><td style="font-family:var(--mono);font-size:.7rem;color:var(--muted);">${p.paymentId||p.orderId||'—'}</td><td style="font-size:.75rem;color:var(--red);">${p.error||'—'}</td></tr>`;
         }).join('');
     });
 }
+
 
 function loadFeedback(){
     db.ref('feedback').once('value').then(snap=>{
@@ -850,6 +882,9 @@ function loadPricing(){
     document.getElementById('usd-6').value=d.sixMonth||6.00;
     document.getElementById('usd-y').value=d.yearly||12.00;
   });
+  db.ref('settings/exchangeRate').once('value').then(snap=>{
+    document.getElementById('usd-rate').value=snap.val()||84;
+  });
   // Language stats
   loadLangStats();
 }
@@ -876,6 +911,7 @@ function saveUsdPricing(){
     yearly:+document.getElementById('usd-y').value||12.00,
     updatedAt:Date.now()
   }).then(()=>toast('USD Pricing save! 🇺🇸 International users ke liye live ✅'));
+  db.ref('settings/exchangeRate').set(+document.getElementById('usd-rate').value||84);
 }
 
 function loadLangStats(){
@@ -950,9 +986,14 @@ function exportCSV(type){
         dlCSV(rows,'users_'+Date.now()+'.csv');toast('Users CSV download! ✅');
     }else if(type==='payments'){
         if(!expD.payments?.length){toast('Pehle Payments page open karein','error');return;}
-        const rows=[['Time','User','Type','Amount','Status','Payment ID']];
-        expD.payments.forEach(p=>rows.push([p.timestamp?new Date(p.timestamp).toLocaleDateString('hi-IN'):'',p.userName||p.userId||'',p.type||p.plan||'',p.amount||0,p.status||'',p.paymentId||'']));
+        const rows=[['Time','User','Type','Amount','Currency','Country','Status','Payment ID']];
+        expD.payments.forEach(p=>rows.push([p.timestamp?new Date(p.timestamp).toLocaleDateString('hi-IN'):'',p.userName||p.userId||'',p.type||p.plan||'',p.amount||0,p.currency||'INR',p.country||'',p.status||'',p.paymentId||'']));
         dlCSV(rows,'payments_'+Date.now()+'.csv');toast('Payments CSV download! ✅');
+    }else if(type==='failedPayments'){
+        if(!expD.failedPayments?.length){toast('Pehle Payments page open karein','error');return;}
+        const rows=[['Time','User','Type','Amount','Currency','Payment ID','Error']];
+        expD.failedPayments.forEach(p=>rows.push([p.timestamp?new Date(p.timestamp).toLocaleDateString('hi-IN'):'',p.userId||'',p.type||'',p.amount||0,p.currency||'',p.paymentId||p.orderId||'',p.error||'']));
+        dlCSV(rows,'failed_payments_'+Date.now()+'.csv');toast('Failed Payments CSV download! ✅');
     }
 }
 function dlCSV(rows,fn){const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,\uFEFF'+encodeURIComponent(csv);a.download=fn;a.click();}
